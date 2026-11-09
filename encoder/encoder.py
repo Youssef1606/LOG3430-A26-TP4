@@ -25,23 +25,6 @@ VALID_ENCODINGS = [
 ]
 
 
-def map_to_windows_encoding(encoding):
-    conversions = {
-        UTF8: 'utf8',
-        UTF16: 'unicode',
-        UTF32: 'utf32',
-        UTF16_LE: 'unicode',
-        UTF16_BE: 'bigendianunicode',
-        UTF32_LE: 'utf32',
-        UTF32_BE: 'bigendianutf32',
-    }
-
-    if encoding in conversions:
-        return conversions[encoding]
-    else:
-        raise ValueError(f"Unsupported encoding: {encoding}")
-
-
 def detect_bom(filepath):
     """Detect encoding from BOM (Byte Order Mark)"""
     with open(filepath, 'rb') as f:
@@ -65,29 +48,30 @@ def detect(filepath):
     return bom_encoding
 
 
-def exec_convert(input_file, output_file, from_encoding: str, to_encoding: str) -> subprocess.CompletedProcess:
+def exec_convert(input_file, output_file, from_encoding: str, to_encoding: str):
     from_encoding = from_encoding.strip().upper()
     to_encoding = to_encoding.strip().upper()
 
     if sys.platform == 'win32':
-        from_encoding = map_to_windows_encoding(from_encoding)
-        to_encoding = map_to_windows_encoding(to_encoding)
-        return subprocess.run(['powershell', '-Command',
-                               f'Get-Content "{input_file}" -Encoding {from_encoding} | Set-Content "{output_file}" -Encoding {to_encoding}'],
-                              check=True)
+        # Python codecs preserve the text without PowerShell's extra UTF-8 BOM
+        # or line endings. Explicit LE/BE codecs also avoid adding a BOM.
+        with open(input_file, 'r', encoding=from_encoding, newline='') as source:
+            content = source.read()
+        with open(output_file, 'w', encoding=to_encoding, newline='') as output:
+            output.write(content)
     else:
-        return subprocess.run(['iconv',
-                               '--from-code', from_encoding,
-                               '--to-code', to_encoding,
-                               input_file,
-                               '--output', output_file], check=True)
+        # macOS iconv has no --output option; both platforms support stdout.
+        with open(output_file, 'wb') as output:
+            return subprocess.run(['iconv', '-f', from_encoding,
+                                   '-t', to_encoding, input_file],
+                                  stdout=output, check=True)
 
 
 def convert(input_file, output_file, from_encoding, to_encoding):
     """Convert file between encodings"""
     try:
         exec_convert(input_file, output_file, from_encoding, to_encoding)
-    except subprocess.CalledProcessError as e:
+    except (subprocess.CalledProcessError, OSError, UnicodeError, LookupError) as e:
         return False, f"Error: {e}"
 
     return True, f"Converted {input_file} from {from_encoding} to {to_encoding}"
